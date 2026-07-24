@@ -1,4 +1,4 @@
-name = "mmh-attempts-cgl"
+name = "mmh-workers"
 main = "src/index.js"
 compatibility_date = "2024-09-01"
 
