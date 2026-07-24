@@ -1,0 +1,14 @@
+name = "mmh-attempts-ntpc"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+
+# Fill this in after creating the D1 database on this exam's
+# Cloudflare account: wrangler d1 create mmh-attempts-ntpc
+# (or Dashboard -> D1 -> Create Database -> copy the ID it shows)
+[[d1_databases]]
+binding = "DB"
+database_name = "mmh-attempts-ntpc"
+database_id = "REPLACE_WITH_DATABASE_ID"
+
+[vars]
+ALLOWED_ORIGINS = "https://mock-matrix-hub.in,https://www.mock-matrix-hub.in,https://mockmatrixhub.pages.dev"
