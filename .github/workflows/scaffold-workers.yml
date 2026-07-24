@@ -1,0 +1,28 @@
+name: Scaffold exam workers
+
+# Manual trigger only — go to Actions tab -> "Scaffold exam workers" -> Run workflow.
+# Safe to re-run any time: it regenerates schema.sql / index.js / package.json /
+# wrangler.toml in each folder from templates/, but preserves any database_id you've
+# already filled in. Edit templates/ and re-run to push a fix to all 7 workers at once.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Run scaffold script
+        run: bash scripts/scaffold.sh
+
+      - name: Commit and push generated folders
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Scaffold exam worker folders (automated)"
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
