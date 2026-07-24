@@ -1,5 +1,5 @@
 {
-  "name": "mmh-attempts-worker",
+  "name": "mmh-attempts-cgl",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
