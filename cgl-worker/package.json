@@ -7,7 +7,7 @@
     "db:create": "wrangler d1 create mmh-attempts",
     "db:migrate": "wrangler d1 execute mmh-attempts --remote --file=./schema.sql"
   },
-  "devDependencies": {
-    "wrangler": "^3.78.0"
-  }
+    "devDependencies": {
+  "wrangler": "^4.0.0"
+    }
 }
