@@ -94,12 +94,14 @@ function trimSectionsToD1Shape(sections) {
 // ------------------------------------------------------------
 // Reshape one exam's merged attempt_history snapshots (one snapshot
 // per quiz ID belonging to that exam) into D1-schema rows. At_no is
-// assigned per user ACROSS all quiz IDs in the exam, sorted by
-// submittedAt (the Firebase key under each user) ascending.
+// assigned per user PER QUIZ ID (i.e. per test), sorted by
+// submittedAt (the Firebase key under each user) ascending — this
+// matches the D1 uniqueness constraint of (quiz_id, email_key, At_no).
 // ------------------------------------------------------------
 function reshapeExamSnapshots(quizSnapshotPairs) {
-  const byUser = {};
+  const byGroup = {};
   let skipped = 0;
+  const usersSeen = new Set();
 
   quizSnapshotPairs.forEach(({ quizId, snapVal }) => {
     Object.keys(snapVal || {}).forEach((emailKey) => {
@@ -107,17 +109,18 @@ function reshapeExamSnapshots(quizSnapshotPairs) {
       Object.keys(userNode).forEach((ts) => {
         const payload = userNode[ts];
         if (!payload || typeof payload !== "object") { skipped++; return; }
-        if (!byUser[emailKey]) byUser[emailKey] = [];
-        byUser[emailKey].push({ ts: Number(ts), payload, quizId });
+        usersSeen.add(emailKey);
+        const groupKey = quizId + "||" + emailKey; // reset At_no per (quiz_id, emailKey)
+        if (!byGroup[groupKey]) byGroup[groupKey] = [];
+        byGroup[groupKey].push({ ts: Number(ts), payload, quizId, emailKey });
       });
     });
   });
 
   const rows = [];
-  const userCount = Object.keys(byUser).length;
 
-  Object.keys(byUser).forEach((emailKey) => {
-    const entries = byUser[emailKey].sort((a, b) => a.ts - b.ts);
+  Object.keys(byGroup).forEach((groupKey) => {
+    const entries = byGroup[groupKey].sort((a, b) => a.ts - b.ts);
     let atNo = 0;
     entries.forEach((entry) => {
       const p = entry.payload;
@@ -128,7 +131,7 @@ function reshapeExamSnapshots(quizSnapshotPairs) {
       atNo++;
       rows.push({
         quiz_id: p.quizId || entry.quizId,
-        email_key: p.emailKey || emailKey,
+        email_key: p.emailKey || entry.emailKey,
         At_no: atNo,
         score: p.score,
         correct: p.correct || 0,
@@ -140,7 +143,7 @@ function reshapeExamSnapshots(quizSnapshotPairs) {
     });
   });
 
-  return { rows, userCount, skipped };
+  return { rows, userCount: usersSeen.size, skipped };
 }
 
 // ------------------------------------------------------------
@@ -299,3 +302,4 @@ main().catch((e) => {
   console.error("Export failed:", e);
   process.exit(1);
 });
+             
