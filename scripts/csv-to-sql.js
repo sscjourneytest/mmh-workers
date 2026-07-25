@@ -81,6 +81,22 @@ function main() {
   const dataRows = rows.slice(1);
   const statements = [];
 
+  // Full-replace guard: the exporter always emits the COMPLETE current
+  // attempt set for every quiz_id it includes (it re-derives At_no from
+  // scratch from Firebase each run). So before inserting, delete any
+  // existing rows for these quiz_ids — otherwise stale rows left over
+  // from an older/buggy export run (e.g. a leftover At_no that no longer
+  // exists in the corrected data) never get cleaned up by the
+  // upsert-only INSERT ... ON CONFLICT below.
+  const quizIds = [...new Set(dataRows.map((r) => r[0]))];
+  if (quizIds.length) {
+    statements.push(
+      "DELETE FROM attempts WHERE quiz_id IN (" +
+      quizIds.map(sqlEscape).join(", ") +
+      ");"
+    );
+  }
+
   for (let i = 0; i < dataRows.length; i += BATCH_SIZE) {
     const batch = dataRows.slice(i, i + BATCH_SIZE);
     const valuesList = batch.map((r) => {
@@ -116,3 +132,4 @@ function main() {
 }
 
 main();
+
