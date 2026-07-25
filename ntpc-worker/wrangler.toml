@@ -11,4 +11,4 @@ database_name = "mmh-attempts-ntpc"
 database_id = "REPLACE_WITH_DATABASE_ID"
 
 [vars]
-ALLOWED_ORIGINS = "https://mock-matrix-hub.in,https://www.mock-matrix-hub.in,https://mockmatrixhub.pages.dev"
+ALLOWED_ORIGINS = "https://mockmatrixhub.in,https://www.mockmatrixhub.in,https://mockmatrixhub.pages.dev"

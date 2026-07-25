@@ -3,13 +3,16 @@
 // Single source of truth for rank AND toppers (quiz_results on
 // Firebase is no longer used).
 // Routes:
-//   POST /save-attempt    { quizId, emailKey, score, correct, wrong, timeTaken, responseStream, sections } -- sections: {name:{score,correct,wrong,timeTaken}}
-//   POST /update-attempt  { quizId, emailKey, atNo, score, correct, wrong, sections }
-//   GET  /rank             ?quizId=&score=&timeTaken=
-//   GET  /toppers          ?quizId=&limit=10
-//   GET  /attempt          ?quizId=&emailKey=              (latest attempt only — cross-device resume)
-//   GET  /attempts         ?quizId=&emailKey=              (ALL attempts for this user — history browser)
-//   GET  /attempt-by-no    ?quizId=&emailKey=&atNo=         (one specific attempt, full data — viewing a past attempt)
+//   POST /save-attempt      { quizId, emailKey, score, correct, wrong, timeTaken, responseStream, sections } -- sections: {name:{score,correct,wrong,timeTaken}}
+//                            -> returns { success, atNo, rank, total, percentile, toppers }
+//   POST /update-attempt    { quizId, emailKey, atNo, score, correct, wrong, sections }
+//                            -> returns { success, rank, total, percentile, toppers }
+//   GET  /rank               ?quizId=&score=&timeTaken=
+//   GET  /toppers            ?quizId=&limit=10
+//   GET  /rank-and-toppers   ?quizId=&score=&timeTaken=&limit=10   (read-only combined, used by silent restore)
+//   GET  /attempt             ?quizId=&emailKey=              (latest attempt only — cross-device resume)
+//   GET  /attempts            ?quizId=&emailKey=              (ALL attempts for this user — history browser)
+//   GET  /attempt-by-no       ?quizId=&emailKey=&atNo=         (one specific attempt, full data — viewing a past attempt)
 // ============================================================
 
 function corsHeaders(request, env) {
@@ -66,6 +69,9 @@ export default {
       if (url.pathname === "/attempt-by-no" && request.method === "GET") {
         return await getAttemptByNo(request, url, env);
       }
+      if (url.pathname === "/rank-and-toppers" && request.method === "GET") {
+        return await getRankAndToppersRoute(request, url, env);
+      }
       return json({ error: "Not found" }, request, env, 404);
     } catch (err) {
       return json({ error: err.message || "Internal error" }, request, env, 500);
@@ -74,12 +80,59 @@ export default {
 };
 
 // ------------------------------------------------------------
+// Shared: rank + percentile + toppers for a given score/time.
+// Used by /save-attempt and /update-attempt (so both return live
+// rank+toppers in the same response — no extra round trip needed)
+// and by /rank-and-toppers (read-only, for the silent restore path).
+// ------------------------------------------------------------
+async function computeRankAndToppers(env, quizId, score, timeTaken, limit = 10) {
+  const [totalRow, rankRow, toppersResult] = await Promise.all([
+    env.DB.prepare(`SELECT total_attempts FROM quiz_stats WHERE quiz_id = ?`)
+      .bind(quizId)
+      .first(),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS aheadCount FROM attempts
+       WHERE quiz_id = ?
+         AND (score > ? OR (score = ? AND time_taken < ?))`
+    )
+      .bind(quizId, score, score, timeTaken)
+      .first(),
+    env.DB.prepare(
+      `SELECT email_key, score, correct, wrong, time_taken, sections
+       FROM attempts
+       WHERE quiz_id = ?
+       ORDER BY score DESC, time_taken ASC
+       LIMIT ?`
+    )
+      .bind(quizId, limit)
+      .all(),
+  ]);
+
+  const total = totalRow ? totalRow.total_attempts : 0;
+  const rank = (rankRow ? rankRow.aheadCount : 0) + 1;
+  const below = total - rank;
+  const percentile = total > 0 ? ((below / total) * 100).toFixed(2) : "0.00";
+
+  const toppers = toppersResult.results.map((r) => ({
+    name: r.email_key,
+    score: r.score,
+    correct: r.correct,
+    wrong: r.wrong,
+    timeTaken: r.time_taken,
+    sections: JSON.parse(r.sections || "{}"),
+  }));
+
+  return { rank, total, percentile, toppers };
+}
+
+// ------------------------------------------------------------
 // POST /save-attempt
 // Every submit (fresh or reattempt) inserts a NEW row with the
 // next At_no for that (quiz_id, email_key) — atomic via the
 // SELECT-subquery INSERT below, no read-then-write race.
 // Every insert fires trg_attempt_count_up, so total_attempts
 // grows with each reattempt (counts toward rank competition).
+// Returns rank+toppers in the same response as the write.
 // ------------------------------------------------------------
 async function saveAttempt(request, url, env) {
   const body = await request.json();
@@ -100,7 +153,9 @@ async function saveAttempt(request, url, env) {
     .bind(quizId, emailKey, score, correct || 0, wrong || 0, timeTaken, responseStream, sectionsJson, quizId, emailKey)
     .first();
 
-  return json({ success: true, atNo: result.At_no }, request, env);
+  const { rank, total, percentile, toppers } = await computeRankAndToppers(env, quizId, score, timeTaken);
+
+  return json({ success: true, atNo: result.At_no, rank, total, percentile, toppers }, request, env);
 }
 
 // ------------------------------------------------------------
@@ -109,7 +164,8 @@ async function saveAttempt(request, url, env) {
 // answer key after submissions came in). Updates score/correct/
 // wrong/sections only — never response_stream, never At_no — and
 // is a plain UPDATE, so trg_attempt_count_up does NOT fire and
-// total_attempts is unaffected.
+// total_attempts is unaffected. Returns rank+toppers in the same
+// response as the write.
 // ------------------------------------------------------------
 async function updateAttempt(request, url, env) {
   const body = await request.json();
@@ -121,15 +177,24 @@ async function updateAttempt(request, url, env) {
 
   const sectionsJson = JSON.stringify(sections || {});
 
-  await env.DB.prepare(
+  // RETURNING time_taken because rank needs it and this route never
+  // changes it — cheaper than a separate SELECT after the UPDATE.
+  const updated = await env.DB.prepare(
     `UPDATE attempts
      SET score = ?, correct = ?, wrong = ?, sections = ?
-     WHERE quiz_id = ? AND email_key = ? AND At_no = ?`
+     WHERE quiz_id = ? AND email_key = ? AND At_no = ?
+     RETURNING time_taken`
   )
     .bind(score, correct || 0, wrong || 0, sectionsJson, quizId, emailKey, atNo)
-    .run();
+    .first();
 
-  return json({ success: true }, request, env);
+  if (!updated) {
+    return json({ error: "Attempt not found" }, request, env, 404);
+  }
+
+  const { rank, total, percentile, toppers } = await computeRankAndToppers(env, quizId, score, updated.time_taken);
+
+  return json({ success: true, rank, total, percentile, toppers }, request, env);
 }
 
 // ------------------------------------------------------------
@@ -138,6 +203,8 @@ async function updateAttempt(request, url, env) {
 // rank   -> index walk over only the rows ranked above this score/time
 // Every attempt (including reattempts) is its own row here, so
 // this ranks against ALL attempts, not just best-per-user.
+// Kept for backward compatibility — /save-attempt, /update-attempt,
+// and /rank-and-toppers no longer need this as a separate call.
 // ------------------------------------------------------------
 async function getRank(request, url, env) {
   const quizId = url.searchParams.get("quizId");
@@ -173,6 +240,7 @@ async function getRank(request, url, env) {
 // GET /toppers?quizId=&limit=10
 // Uses idx_rank directly — no full-table sort needed. Now the
 // single source for toppers (replaces Firebase quiz_results).
+// Kept for backward compatibility — see note on /rank above.
 // ------------------------------------------------------------
 async function getToppers(request, url, env) {
   const quizId = url.searchParams.get("quizId");
@@ -202,6 +270,27 @@ async function getToppers(request, url, env) {
   }));
 
   return json({ toppers }, request, env);
+}
+
+// ------------------------------------------------------------
+// GET /rank-and-toppers?quizId=&score=&timeTaken=&limit=10
+// Read-only combined rank+toppers — used by the silent restore
+// path (viewing an already-submitted attempt), which never writes,
+// so one round trip instead of two.
+// ------------------------------------------------------------
+async function getRankAndToppersRoute(request, url, env) {
+  const quizId = url.searchParams.get("quizId");
+  const score = Number(url.searchParams.get("score"));
+  const timeTaken = Number(url.searchParams.get("timeTaken"));
+  const limit = Math.min(Number(url.searchParams.get("limit")) || 10, 50);
+
+  if (!quizId || Number.isNaN(score) || Number.isNaN(timeTaken)) {
+    return json({ error: "Missing or invalid quizId/score/timeTaken" }, request, env, 400);
+  }
+
+  const { rank, total, percentile, toppers } = await computeRankAndToppers(env, quizId, score, timeTaken, limit);
+
+  return json({ rank, total, percentile, toppers }, request, env);
 }
 
 // ------------------------------------------------------------
