@@ -8,7 +8,7 @@ compatibility_date = "2024-09-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "mmh-attempts-mts"
-database_id = "REPLACE_WITH_DATABASE_ID"
+database_id = "56f69303-888b-42be-b602-8844a2457fbb"
 
 [vars]
 ALLOWED_ORIGINS = "https://mockmatrixhub.in,https://www.mockmatrixhub.in,https://mockmatrixhub.pages.dev"
