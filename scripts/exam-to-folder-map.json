@@ -1,0 +1,13 @@
+{
+  "cgl": "cgl-worker",
+  "chsl": "chsl-worker",
+  "mts": "mts-worker",
+  "phase": "mts-worker",
+  "gd": "cpo-worker",
+  "cpo": "cpo-worker",
+  "steno": "cpo-worker",
+  "ssc-sub": "ssc-sub-worker",
+  "ntpc": "ntpc-worker",
+  "ntpc-ug": "ntpc-worker",
+  "imps": "imps-worker"
+}
