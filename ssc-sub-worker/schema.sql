@@ -2,7 +2,9 @@
 -- Mock Matrix Hub — Attempt History (Cloudflare D1)
 -- Every reattempt is its own row (At_no = 1, 2, 3...), so every
 -- attempt counts toward rank/toppers/total_attempts — matches
--- the old Firebase attempt_history behaviour.
+-- the old Firebase attempt_history behaviour. This table is now
+-- the single source of truth for rank AND toppers (quiz_results
+-- on Firebase is no longer used).
 -- Run once per account/exam shard:
 --   npx wrangler d1 execute <DB_NAME> --remote --file=./schema.sql
 -- ============================================================
@@ -12,9 +14,11 @@ CREATE TABLE IF NOT EXISTS attempts (
   email_key       TEXT NOT NULL,   -- holds username, not an actual email
   At_no           INTEGER NOT NULL,   -- attempt number per user per quiz: 1, 2, 3...
   score           REAL NOT NULL,
+  correct         INTEGER NOT NULL DEFAULT 0,
+  wrong           INTEGER NOT NULL DEFAULT 0,
   time_taken      INTEGER NOT NULL,   -- total session seconds (authoritative)
   response_stream TEXT NOT NULL,      -- "ans:qtime|ans:qtime|..." (no :Y marked flag)
-  sections        TEXT NOT NULL,      -- JSON: {"REASONING":620,"MATHS":900}
+  sections        TEXT NOT NULL,      -- JSON: {"REASONING":{"score":32,"correct":15,"wrong":3,"timeTaken":620}}
   PRIMARY KEY (quiz_id, email_key, At_no)
 ) WITHOUT ROWID;
 
@@ -50,3 +54,4 @@ BEGIN
   SET total_attempts = total_attempts - 1
   WHERE quiz_id = OLD.quiz_id;
 END;
+
