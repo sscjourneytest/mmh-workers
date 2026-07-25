@@ -1,0 +1,35 @@
+name: Export Firebase Attempts to CSV
+
+# Manual trigger only — Actions tab -> "Export Firebase Attempts to CSV" -> Run workflow.
+# Reads firebase-config.js (repo root), groups the 11 exam keys by their actual
+# distinct Firebase project, fetches attempt_history from each project, and
+# writes one CSV per exam into csv-output/ — matching the D1 attempts table
+# column order exactly (quiz_id,email_key,At_no,score,correct,wrong,
+# time_taken,response_stream,sections).
+#
+# CSVs are uploaded as a workflow ARTIFACT, not committed to the repo — this
+# repo is public, and the CSVs contain real user attempt data (usernames,
+# scores, response streams). Artifacts are only visible to repo collaborators
+# via the Actions run page, and expire automatically (30 days here).
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Export attempts to CSV (exam-wise)
+        run: node scripts/export-attempts-csv.js
+
+      - name: Upload CSVs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: attempts-csv
+          path: csv-output/
+          retention-days: 30

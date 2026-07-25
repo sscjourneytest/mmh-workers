@@ -1,0 +1,121 @@
+name: Import CSVs to D1
+
+# Manual trigger — Actions tab -> "Import CSVs to D1" -> Run workflow ->
+# paste the RUN ID of a completed "Export Firebase Attempts to CSV" run
+# (visible in that run's URL, e.g. .../actions/runs/1234567890 -> the
+# number at the end). Downloads that run's CSV artifact, converts each
+# exam's CSV to batched SQL, and imports it into that exam's D1 database
+# using the matching account from the CF_ACCOUNTS secret.
+#
+# Safe to re-run: imports use INSERT ... ON CONFLICT DO UPDATE keyed on
+# (quiz_id, email_key, At_no), so re-running the same CSV updates existing
+# rows instead of erroring or duplicating.
+on:
+  workflow_dispatch:
+    inputs:
+      export_run_id:
+        description: "Run ID of the Export Firebase Attempts to CSV run to import from"
+        required: true
+
+permissions:
+  actions: read
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Download CSV artifact from the export run
+        uses: actions/download-artifact@v4
+        with:
+          name: attempts-csv
+          path: csv-output
+          run-id: ${{ inputs.export_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Convert + import each exam's CSV into its D1 database
+        env:
+          CF_ACCOUNTS: ${{ secrets.CF_ACCOUNTS }}
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/sql
+          : > /tmp/summary.tsv
+
+          # For each account/folder, find every exam key mapped to it
+          # (scripts/exam-to-folder-map.json), then import whichever of
+          # those exams actually produced a CSV in this export run.
+          echo "$CF_ACCOUNTS" | jq -c '.[]' | while IFS= read -r account; do
+            folder=$(echo "$account" | jq -r '.folder')
+            accountId=$(echo "$account" | jq -r '.accountId')
+            apiToken=$(echo "$account" | jq -r '.apiToken')
+
+            wranglerToml="$folder/wrangler.toml"
+            if [ ! -f "$wranglerToml" ]; then
+              echo "::error::$wranglerToml not found — skipping $folder"
+              echo "$folder" >> /tmp/failed_imports.txt
+              continue
+            fi
+            dbName=$(grep -oP '(?<=database_name = ")[^"]*' "$wranglerToml")
+
+            # exam keys assigned to this folder, e.g. mts-worker -> ["mts","phase"]
+            examKeys=$(jq -r --arg f "$folder" 'to_entries | map(select(.value == $f)) | .[].key' scripts/exam-to-folder-map.json)
+
+            for examKey in $examKeys; do
+              csvPath="csv-output/${examKey}.csv"
+              if [ ! -f "$csvPath" ]; then
+                echo "  ($folder) no CSV for exam '$examKey' in this export — skipping"
+                continue
+              fi
+
+              # row count = lines in CSV minus the header row
+              rowCount=$(( $(wc -l < "$csvPath") - 1 ))
+
+              sqlPath="/tmp/sql/${examKey}.sql"
+              node scripts/csv-to-sql.js "$csvPath" "$sqlPath" || {
+                echo "::error::Failed to convert $csvPath to SQL"
+                echo "$folder ($examKey)" >> /tmp/failed_imports.txt
+                printf "%s\t%s\t%s\t%s\t%s\n" "$examKey" "$folder" "$dbName" "$rowCount" "❌ convert failed" >> /tmp/summary.tsv
+                continue
+              }
+
+              echo "=== Importing $examKey -> $folder ($dbName): $rowCount row(s) ==="
+              if CLOUDFLARE_API_TOKEN="$apiToken" CLOUDFLARE_ACCOUNT_ID="$accountId" \
+                 npx wrangler d1 execute "$dbName" --remote --file="$sqlPath" --config "$wranglerToml"; then
+                echo "✅ $examKey imported into $dbName"
+                printf "%s\t%s\t%s\t%s\t%s\n" "$examKey" "$folder" "$dbName" "$rowCount" "✅ imported" >> /tmp/summary.tsv
+              else
+                echo "::error::Import FAILED for $examKey -> $dbName"
+                echo "$folder ($examKey)" >> /tmp/failed_imports.txt
+                printf "%s\t%s\t%s\t%s\t%s\n" "$examKey" "$folder" "$dbName" "$rowCount" "❌ import failed" >> /tmp/summary.tsv
+              fi
+            done
+          done
+
+          # Build the run summary table (shows on the Actions run page).
+          {
+            echo "## Import summary"
+            echo ""
+            echo "| Exam | D1 Account | Database | Attempt rows | Status |"
+            echo "|------|-----------|----------|--------------|--------|"
+            if [ -s /tmp/summary.tsv ]; then
+              total=0
+              while IFS=$'\t' read -r examKey folder dbName rowCount status; do
+                echo "| $examKey | $folder | $dbName | $rowCount | $status |"
+                total=$((total + rowCount))
+              done < /tmp/summary.tsv
+              echo ""
+              echo "**Total attempt rows imported: $total**"
+            else
+              echo "| — | — | — | 0 | No matching CSVs found in this export |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s /tmp/failed_imports.txt ]; then
+            echo "::error::Failed imports: $(paste -sd, /tmp/failed_imports.txt)"
+            exit 1
+          fi
