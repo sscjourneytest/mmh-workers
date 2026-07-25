@@ -1,9 +1,8 @@
 name: D1 Migrate All Accounts
 
 # Manual trigger only — Actions tab -> "D1 Migrate All Accounts" -> Run workflow.
-# Runs schema.sql against every exam's D1 database, one account at a time.
-# Add/remove entries in the CF_ACCOUNTS secret (see README below) as you add
-# or retire exam Workers — no other change needed here.
+# Runs schema.sql (repo root) against every exam's D1 database, one account at
+# a time. Databases must already exist (created manually) — this only migrates.
 on:
   workflow_dispatch:
 
@@ -18,7 +17,6 @@ jobs:
           CF_ACCOUNTS: ${{ secrets.CF_ACCOUNTS }}
         run: |
           set -o pipefail
-          failed=""
 
           echo "$CF_ACCOUNTS" | jq -c '.[]' | while IFS= read -r account; do
             folder=$(echo "$account" | jq -r '.folder')
