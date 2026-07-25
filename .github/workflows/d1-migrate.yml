@@ -1,0 +1,56 @@
+name: D1 Migrate All Accounts
+
+# Manual trigger only — Actions tab -> "D1 Migrate All Accounts" -> Run workflow.
+# Runs schema.sql against every exam's D1 database, one account at a time.
+# Add/remove entries in the CF_ACCOUNTS secret (see README below) as you add
+# or retire exam Workers — no other change needed here.
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run schema.sql on every account
+        env:
+          CF_ACCOUNTS: ${{ secrets.CF_ACCOUNTS }}
+        run: |
+          set -o pipefail
+          failed=""
+
+          echo "$CF_ACCOUNTS" | jq -c '.[]' | while IFS= read -r account; do
+            folder=$(echo "$account" | jq -r '.folder')
+            accountId=$(echo "$account" | jq -r '.accountId')
+            apiToken=$(echo "$account" | jq -r '.apiToken')
+
+            wranglerToml="$folder/wrangler.toml"
+            if [ ! -f "$wranglerToml" ]; then
+              echo "::error::$wranglerToml not found — skipping $folder"
+              echo "$folder" >> /tmp/failed_accounts.txt
+              continue
+            fi
+
+            dbName=$(grep -oP '(?<=database_name = ")[^"]*' "$wranglerToml")
+            if [ -z "$dbName" ]; then
+              echo "::error::Could not read database_name from $wranglerToml — skipping $folder"
+              echo "$folder" >> /tmp/failed_accounts.txt
+              continue
+            fi
+
+            echo "=== $folder -> D1 database: $dbName (account: $accountId) ==="
+
+            if CLOUDFLARE_API_TOKEN="$apiToken" CLOUDFLARE_ACCOUNT_ID="$accountId" \
+               npx wrangler d1 execute "$dbName" --remote --file=./schema.sql --config "$wranglerToml"; then
+              echo "✅ $folder ($dbName) migrated successfully"
+            else
+              echo "::error::$folder ($dbName) migration FAILED"
+              echo "$folder" >> /tmp/failed_accounts.txt
+            fi
+          done
+
+          if [ -s /tmp/failed_accounts.txt ]; then
+            echo "::error::Migration failed for: $(paste -sd, /tmp/failed_accounts.txt)"
+            exit 1
+          fi
